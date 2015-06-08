@@ -1,53 +1,23 @@
-from flask.ext.restful import Resource, abort
-from flask import current_app as app
 import sqlite3
-from .arguments import things_parser, create_user_parser
-import os
+from flask.ext.restful import Resource, abort, fields, marshal_with
+from .arguments import create_user_parser, update_user_parser
+from .app import get_db
+
+
+user_fields = {
+    'id': fields.Integer,
+    'username': fields.String,
+    'email': fields.String,
+    'favorite_color': fields.String
+}
 
 
 class BaseResource(Resource):
-
     def __init__(self, *args, **kwargs):
-        conn = sqlite3.connect(app.config['DB_LOCATION'])
-        self.db = conn.cursor()
-        self.init_db()
+        self.db = get_db()
+        self.cursor = self.db.cursor()
         super(BaseResource, self).__init__(*args, **kwargs)
 
-    def init_db(self):
-        """
-        Initialize our database by create a couple tables
-        """
-        res = self.db.execute(
-            """
-            SELECT name FROM sqlite_master
-            WHERE type='table' AND name='users'
-            """)
-
-        if not res.fetchall():
-            self.db.execute(
-                """
-                CREATE TABLE users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT,
-                    email TEXT,
-                    favorite_color TEXT
-                )""")
-
-        res = self.db.execute(
-            """
-            SELECT name FROM sqlite_master
-            WHERE type='table' AND name='things'
-            """)
-
-        if not res.fetchall():
-            self.db.execute(
-                """
-                CREATE TABLE things (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT,
-                    color TEXT,
-                    weight TEXT
-                )""")
 
 class Index(BaseResource):
     def get(self):
@@ -61,20 +31,54 @@ class Index(BaseResource):
 
 
 class User(BaseResource):
+    @marshal_with(user_fields)
     def get(self, user_id):
         """
         This is the user resource. Given a user ID, this will
         return information about the user.
         """
-        res = self.db.execute('SELECT * FROM users WHERE id = {}'.format(user_id))
+        res = self.cursor.execute('SELECT * FROM users WHERE id = {}'.format(user_id))
         row = res.fetchone()
+        self.cursor.close()
 
         if row:
             return {
-                'data': row.fetchone()
+                'data': {
+                    'id': row[0],
+                    'username': row[1],
+                    'email': row[2],
+                    'favorite_color': row[3],
+                }
             }
         else:
             return abort(404, message='User not found')
+
+    def put(self, user_id):
+        """
+        Update the user
+
+        :param user_id: Integer
+        """
+        args = update_user_parser.parse_args()
+        res = self.cursor.execute("SELECT * FROM users WHERE id = {}".format(user_id))
+        row = res.fetchone()
+
+        if row:
+            pass
+        else:
+            return abort(404, message='User not found')
+
+    def delete(self, user_id):
+        """
+        Remove the user
+
+        :param user_id: Integer
+        """
+        self.cursor.execute("DELETE FROM users WHERE id = {}".format(user_id))
+
+        return {
+            'message': 'User deleted'
+        }
 
 
 class UserList(BaseResource):
@@ -83,8 +87,9 @@ class UserList(BaseResource):
         This is the user resource. Given a user ID, this will
         return information about the user.
         """
-        res = self.db.execute("SELECT * FROM users")
+        res = self.cursor.execute("SELECT * FROM users")
         rows = res.fetchall()
+        self.cursor.close()
 
         return {
             'data': rows or []
@@ -96,46 +101,30 @@ class UserList(BaseResource):
         """
         args = create_user_parser.parse_args()
         username = args.get('username')
+        email = args.get('email')
+        favorite_color = args.get('favorite_color')
 
-        self.db.execute("INSERT INTO users (username) VALUES ('{}')".format(username))
+        try:
+            self.cursor.execute(
+                "INSERT INTO users (username, email, favorite_color) VALUES ('{}', '{}', '{}')".format(
+                    username, email, favorite_color)
+            )
+        except sqlite3.IntegrityError:
+            return {
+                'message': 'User with provided username already exists'
+            }, 400
 
-        res = self.db.execute("SELECT * FROM users WHERE username = '{}'".format(username))
+        res = self.cursor.execute(
+            "SELECT id, username, email, favorite_color FROM users WHERE username = '{}'".format(username)
+        )
         row = res.fetchone()
+        self.cursor.close()
 
         return {
-            'data': row
+            'data': {
+                'id': row[0],
+                'username': row[1],
+                'email': row[2],
+                'favorite_color': row[3]
+            }
         }
-
-
-class MySingleThing(BaseResource):
-    def get(self, thing_id):
-        results = None
-
-        if os.path.exists('./database.csv') and os.path.isfile('./database.csv'):
-            with open('./database.csv') as f_handle:
-                for line in f_handle.readlines():
-                    if line[0] == thing_id:
-                        resutls = {
-                            'data': [x for x in line.split(',')]
-                        }
-
-        if results:
-            return results
-        else:
-            raise abort(404)
-
-
-class MyListOfThings(BaseResource):
-    def post(self):
-        """
-        Create our resource
-        """
-        args = thing_parser.parse_args()
-        stuff = args.get('stuff')
-
-        if stuff:
-            with open('./database.csv', 'a') as f_handle:
-                f_handle.write('{}\n'.format(args.get('stuff')))
-            return {'message': 'resource created'}
-        else:
-            return {'message': 'nothing created'}
